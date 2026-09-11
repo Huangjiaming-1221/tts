@@ -395,23 +395,29 @@ img-src 'self' data:;
 
         // 单人模式
         async function generateSingle(text) {
-            loadingText.textContent = '正在生成语音...';
+            loadingText.textContent = '正在唤醒服务器并生成语音...';
             progressBar.style.width = '0%';
-            
+
+            // 预唤醒：先GET一下后端，拉起容器
+            try {
+                await fetch(API_URL, { signal: AbortSignal.timeout(20000) });
+            } catch (e) {
+                // 唤醒请求超时没关系，继续尝试请求tts
+            }
+
             const interval = setInterval(() => {
                 progressBar.style.width = Math.min(parseFloat(progressBar.style.width) + 5, 90) + '%';
             }, 200);
-
             try {
                 const res = await fetch(`${API_URL}/tts`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ text, voice: selectedVoices[0].id })
+                    body: JSON.stringify({ text, voice: selectedVoices[0].id }),
+                    signal: AbortSignal.timeout(20000) // 设置最长20秒超时，匹配你的要求
                 });
                 const data = await res.json();
                 clearInterval(interval);
                 progressBar.style.width = '100%';
-
                 if (data.success) {
                     setTimeout(() => {
                         loadingState.classList.add('hidden');
@@ -421,72 +427,77 @@ img-src 'self' data:;
                         singleDownload.href = data.audioUrl;
                         singleDownload.download = `voice-${selectedVoices[0].name}-${Date.now()}.mp3`;
                     }, 300);
+                } else {
+                    alert("后端返回错误："+data.error)
                 }
             } catch (err) {
                 clearInterval(interval);
                 loadingState.classList.add('hidden');
-                alert('生成失败：' + err.message);
+                alert('生成失败：服务器唤醒超时，请重试一次。');
             }
         }
+
 
         // 齐读模式
         async function generateChorus(text) {
-            const total = selectedVoices.length;
-            loadingText.textContent = `正在生成 ${total} 人齐读...`;
-            progressBar.style.width = '0%';
+    const total = selectedVoices.length;
+    loadingText.textContent = `正在唤醒服务器并生成 ${total} 人齐读...`;
+    progressBar.style.width = '0%';
+
+    // 预唤醒
+    try {
+        await fetch(API_URL, { signal: AbortSignal.timeout(20000) });
+    } catch (e) {}
+
+    audioElements = [];
+    let completed = 0;
+    try {
+        const promises = selectedVoices.map(async (voice, idx) => {
+            const res = await fetch(`${API_URL}/tts`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text, voice: voice.id }),
+                signal: AbortSignal.timeout(20000)
+            });
+            const data = await res.json();
             
-            audioElements = [];
-            let completed = 0;
+            completed++;
+            progressBar.style.width = (completed / total * 100) + '%';
+            progressDetail.textContent = `已完成 ${completed}/${total}：${voice.name}`;
+            
+            return { voice, data };
+        });
+        const results = await Promise.all(promises);
+        progressBar.style.width = '100%';
+        setTimeout(() => {
+            loadingState.classList.add('hidden');
+            chorusResult.classList.remove('hidden');
+            chorusVoices.textContent = `参与人数：${total}人（${selectedVoices.map(v => v.name).join('、')}）`;
+            
+            // 渲染独立播放器
+            audioList.innerHTML = results.map((r, i) => `
+                <div class="flex items-center gap-3 bg-white/40 rounded-lg p-2">
+                    <div class="w-8 h-8 rounded-full bg-gradient-to-br from-blue-400 to-cyan-400 flex items-center justify-center text-white text-xs font-bold">
+                        ${i + 1}
+                    </div>
+                    <div class="flex-1 min-w-0">
+                        <div class="text-sm font-medium text-gray-800 truncate">${r.voice.name} - ${r.voice.tag}</div>
+                        <audio src="${r.data.audioUrl}" controls class="w-full h-8 mt-1" data-idx="${i}">
+                    </div>
+                    <a href="${r.data.audioUrl}" download class="text-blue-500 hover:text-blue-700 p-2">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+                    </a>
+                </div>
+            `).join('');
+            // 收集 audio 元素
+            audioElements = Array.from(audioList.querySelectorAll('audio'));
+        }, 300);
+    } catch (err) {
+        loadingState.classList.add('hidden');
+        alert('生成失败：服务器唤醒超时，请重试。');
+    }
+}
 
-            try {
-                const promises = selectedVoices.map(async (voice, idx) => {
-                    const res = await fetch(`${API_URL}/tts`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ text, voice: voice.id })
-                    });
-                    const data = await res.json();
-                    
-                    completed++;
-                    progressBar.style.width = (completed / total * 100) + '%';
-                    progressDetail.textContent = `已完成 ${completed}/${total}：${voice.name}`;
-                    
-                    return { voice, data };
-                });
-
-                const results = await Promise.all(promises);
-                progressBar.style.width = '100%';
-
-                setTimeout(() => {
-                    loadingState.classList.add('hidden');
-                    chorusResult.classList.remove('hidden');
-                    chorusVoices.textContent = `参与人数：${total}人（${selectedVoices.map(v => v.name).join('、')}）`;
-                    
-                    // 渲染独立播放器
-                    audioList.innerHTML = results.map((r, i) => `
-                        <div class="flex items-center gap-3 bg-white/40 rounded-lg p-2">
-                            <div class="w-8 h-8 rounded-full bg-gradient-to-br from-blue-400 to-cyan-400 flex items-center justify-center text-white text-xs font-bold">
-                                ${i + 1}
-                            </div>
-                            <div class="flex-1 min-w-0">
-                                <div class="text-sm font-medium text-gray-800 truncate">${r.voice.name} - ${r.voice.tag}</div>
-                                <audio src="${r.data.audioUrl}" controls class="w-full h-8 mt-1" data-idx="${i}"></audio>
-                            </div>
-                            <a href="${r.data.audioUrl}" download class="text-blue-500 hover:text-blue-700 p-2">
-                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
-                            </a>
-                        </div>
-                    `).join('');
-
-                    // 收集 audio 元素
-                    audioElements = Array.from(audioList.querySelectorAll('audio'));
-                }, 300);
-
-            } catch (err) {
-                loadingState.classList.add('hidden');
-                alert('生成失败：' + err.message);
-            }
-        }
 
         // ==================== 同时播放控制 ====================
         playAllBtn.addEventListener('click', () => {
